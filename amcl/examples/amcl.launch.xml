@@ -1,0 +1,86 @@
+<launch>
+  <arg name="use_map_topic"   default="true"/>
+  <arg name="scan_topic"      default="scan"/>
+  <arg name="odom_frame_id"   default="odom"/>
+  <arg name="base_frame_id"   default="base_footprint"/>
+  <arg name="global_frame_id" default="map"/>
+  <arg name="use_post_process"   default="false"/>
+  <arg name="tf_broadcast"   default="false"/>
+  <arg name="use_pre_process" default="false"/>
+  <arg name="scan_valid_cnt_min" default="0.7"/>
+  <arg name="scan_valid_min" default="0.1"/>
+  <arg name="tf_publish" default="false"/>
+  <arg name="point_on_circle" default="500"/>
+  <arg name="radius_max" default="0.2"/>
+
+
+
+
+  <!--
+    Example amcl configuration. Descriptions of parameters, as well as a full list of all amcl parameters, can be found at http://www.ros.org/wiki/amcl.
+  -->
+<node pkg="amcl" type="amcl" name="amcl" respawn="false">
+   <!--  <remap from="scan" to="base_scan" />-->
+  <!-- Publish scans from best pose at a max of 10 Hz omni-->
+  <param name="odom_model_type" value="diff"/>
+  <param name="odom_alpha5" value="0.1"/>
+  <param name="transform_tolerance" value="0.2" />
+  <param name="gui_publish_rate" value="10.0"/>
+  <param name="laser_max_beams" value="30"/>
+  <param name="min_particles" value="500"/>
+  <param name="max_particles" value="5000"/>
+  <param name="kld_err" value="0.01"/>
+  <param name="kld_z" value="0.99"/>
+
+  <param name="odom_alpha1" value="0.5"/> <!-- rotation noise per rotation -->
+  <param name="odom_alpha2" value="0.5"/> <!-- rotation noise per translation -->
+  <!-- translation std dev, m -->
+  <param name="odom_alpha3" value="0.5"/> <!-- translation noise per translation -->
+  <param name="odom_alpha4" value="0.5"/> <!-- translation noise per rotation -->
+
+<!--
+  <rosparam file="$(find navigation_stage)/move_base_config/initialpose.yaml" command="load" />
+-->
+
+  <param name="laser_z_hit" value="0.5"/>
+  <param name="laser_z_short" value="0.05"/>
+  <param name="laser_z_max" value="0.05"/>
+  <param name="laser_z_rand" value="0.5"/>
+  <param name="laser_sigma_hit" value="0.2"/>
+  <param name="laser_lambda_short" value="0.1"/>
+  <param name="laser_model_type" value="likelihood_field"/>
+  <!-- <param name="laser_model_type" value="beam"/> -->
+  <param name="laser_likelihood_max_dist" value="2.0"/>
+  <!-- todo: update forever just for test -->
+  <param name="update_min_d" value="0.1"/>
+  <param name="update_min_a" value="0.25"/>
+  <!-- update normal
+  <param name="update_min_d" value="0.1"/>
+  <param name="update_min_a" value="0.25"/>
+   -->
+  <param name="odom_frame_id" value="odom"/>
+  <param name="resample_interval" value="2"/>
+  <param name="transform_tolerance" value="0.5"/>
+  <param name="recovery_alpha_slow" value="0.0"/>
+  <param name="recovery_alpha_fast" value="0.0"/>
+  <param name="use_post_process" value="$(arg use_post_process)"/>
+  <param name="use_pre_process" value="$(arg use_pre_process)"/>
+  <param name="scan_valid_cnt_min" value="$(arg scan_valid_cnt_min)"/>
+  <param name="tf_publish" value="$(arg tf_publish)"/>
+  <param name="point_on_circle" value="$(arg point_on_circle)"/>
+  <param name="radius_max" value="$(arg radius_max)"/>
+
+
+
+
+  <!-- todo : bypass in local michine
+     <rosparam file="$(find navigation_stage)/move_base_config/others.yaml" command="load" ns="others" />
+
+   -->
+  <param name="tf_broadcast" value="$(arg tf_broadcast)"/>
+
+
+</node>
+</launch>
+
+
