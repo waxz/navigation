@@ -10,14 +10,27 @@ find_package(catkin REQUIRED
             tf
             dynamic_reconfigure
             nav_msgs
+            std_srvs
+            std_msgs
+            geometry_msgs
         )
 
 find_package(Boost REQUIRED)
 
 # dynamic reconfigure
+
+add_service_files(FILES
+                   amcl_particles.srv
+        )
 generate_dynamic_reconfigure_options(
     cfg/AMCL.cfg
 )
+
+generate_messages(DEPENDENCIES
+                   std_msgs
+                   geometry_msgs
+)
+
 
 catkin_package(
     CATKIN_DEPENDS
