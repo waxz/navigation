@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <vector>
+#include <valarray>
 #include <map>
 #include <cmath>
 
@@ -65,6 +66,9 @@
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
 #include <boost/foreach.hpp>
+
+// Custom particle service
+#include "amcl/amcl_particles.h"
 
 #define NEW_UNIFORM_SAMPLING 1
 
@@ -137,15 +141,23 @@ class AmclNode
     tf::Transform latest_tf_;
     bool latest_tf_valid_;
 
+    // used for preprocess, if scan_count too low set to 0
+    int scan_valid_flag_;
+
     // Pose-generating function used to uniformly distribute particles over
     // the map
     static pf_vector_t uniformPoseGenerator(void* arg);
+    // customPoseGenerator for partial reset
+    static pf_vector_t customPoseGenerator(void* arg);
 #if NEW_UNIFORM_SAMPLING
     static std::vector<std::pair<int,int> > free_space_indices;
 #endif
     // Callbacks
     bool globalLocalizationCallback(std_srvs::Empty::Request& req,
                                     std_srvs::Empty::Response& res);
+    // service callback for partial reset
+    bool setParticlesCallback(amcl::amcl_particles::Request& req,
+                                    amcl::amcl_particles::Response& res);
     bool nomotionUpdateCallback(std_srvs::Empty::Request& req,
                                     std_srvs::Empty::Response& res);
     bool setMapCallback(nav_msgs::SetMap::Request& req,
@@ -163,6 +175,9 @@ class AmclNode
     void applyInitialPose();
 
     double getYaw(tf::Pose& t);
+
+    // preprocess laser scan
+    void preprocess_scan(const sensor_msgs::LaserScanConstPtr &msg);
 
     //parameter for what odom to use
     std::string odom_frame_id_;
@@ -206,6 +221,10 @@ class AmclNode
     double laser_min_range_;
     double laser_max_range_;
 
+    // add custom set filter service
+    int point_on_circle_;
+    double radius_max_;
+
     //Nomotion update control
     bool m_force_update;  // used to temporarily let amcl update samples even when no motion occurs...
 
@@ -233,7 +252,9 @@ class AmclNode
     ros::NodeHandle private_nh_;
     ros::Publisher pose_pub_;
     ros::Publisher particlecloud_pub_;
+    ros::Publisher tf_pub_;
     ros::ServiceServer global_loc_srv_;
+    ros::ServiceServer set_particles_srv_;
     ros::ServiceServer nomotion_update_srv_; //to let amcl update samples without requiring motion
     ros::ServiceServer set_map_srv_;
     ros::Subscriber initial_pose_sub_old_;
@@ -261,6 +282,10 @@ class AmclNode
     double init_cov_[3];
     laser_model_t laser_model_type_;
     bool tf_broadcast_;
+    bool use_post_process_;
+    bool use_pre_process_;
+    double scan_valid_cnt_min_, scan_valid_min_;
+    bool tf_publish_;
 
     void reconfigureCB(amcl::AMCLConfig &config, uint32_t level);
 
@@ -404,6 +429,24 @@ AmclNode::AmclNode() :
   private_nh_.param("recovery_alpha_slow", alpha_slow_, 0.001);
   private_nh_.param("recovery_alpha_fast", alpha_fast_, 0.1);
   private_nh_.param("tf_broadcast", tf_broadcast_, true);
+  private_nh_.param("use_post_process", use_post_process_, false);
+    private_nh_.param("use_pre_process", use_pre_process_, false);
+  private_nh_.param("scan_valid_cnt_min", scan_valid_cnt_min_, 0.7);
+  private_nh_.param("scan_valid_min", scan_valid_min_, 0.1);
+    private_nh_.param("tf_publish",tf_publish_,false);
+
+    private_nh_.param("point_on_circle", point_on_circle_, 300);
+    private_nh_.param("radius_max", radius_max_, 0.2);
+
+
+
+
+
+    if (use_post_process_){
+        ROS_ERROR("check use_post_process_ !!!!!!!!!!!!!!!!!!");
+    }
+
+  scan_valid_flag_ = 1;
 
   transform_tolerance_.fromSec(tmp_tol);
 
@@ -420,10 +463,12 @@ AmclNode::AmclNode() :
   tf_ = new TransformListenerWrapper();
 
   pose_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("amcl_pose", 2, true);
+  tf_pub_ = nh_.advertise<geometry_msgs::PoseWithCovarianceStamped>("amcl_tf", 2, true);
   particlecloud_pub_ = nh_.advertise<geometry_msgs::PoseArray>("particlecloud", 2, true);
   global_loc_srv_ = nh_.advertiseService("global_localization", 
 					 &AmclNode::globalLocalizationCallback,
                                          this);
+  set_particles_srv_ = nh_.advertiseService("amcl/set_particles", &AmclNode::setParticlesCallback, this);
   nomotion_update_srv_= nh_.advertiseService("request_nomotion_update", &AmclNode::nomotionUpdateCallback, this);
   set_map_srv_= nh_.advertiseService("set_map", &AmclNode::setMapCallback, this);
 
@@ -802,7 +847,7 @@ AmclNode::handleMapMessage(const nav_msgs::OccupancyGrid& msg)
            msg.info.width,
            msg.info.height,
            msg.info.resolution);
-  
+
   if(msg.header.frame_id != global_frame_id_)
     ROS_WARN("Frame_id of map received:'%s' doesn't match global_frame_id:'%s'. This could cause issues with reading published topics",
              msg.header.frame_id.c_str(),
@@ -1020,6 +1065,125 @@ AmclNode::globalLocalizationCallback(std_srvs::Empty::Request& req,
   return true;
 }
 
+/*
+ *
+ * name: customPoseGenerator
+ * Sample from a custom set of particles equal to the Max Number of particles
+ * @gemetry_msgs::PoseArray
+ * @pf_vector_t
+ *
+ */
+
+pf_vector_t AmclNode::customPoseGenerator(void* arg)
+{
+  geometry_msgs::PoseArray* parray = (geometry_msgs::PoseArray*) arg;
+  geometry_msgs::Pose le = parray->poses.back();
+  tfScalar roll, pitch, yaw ;
+
+  tf::Quaternion quat(le.orientation.x,le.orientation.y,le.orientation.z,le.orientation.w);
+  tf::Matrix3x3(quat).getRPY(roll, pitch, yaw);
+
+  parray->poses.pop_back();
+
+  pf_vector_t p;
+  p.v[0] = le.position.x;
+  p.v[1] = le.position.y;
+  p.v[2] = (double)yaw;//drand48() * 2 * M_PI - M_PI;
+
+  return p;
+}
+
+
+bool
+AmclNode::setParticlesCallback(amcl::amcl_particles::Request& req,
+                               amcl::amcl_particles::Response& res)
+{
+  int no_of_particles =  req.pose_array_msg.poses.size();
+  ROS_INFO("Received set particles srv call, Pose Array Header seq = %i",req.pose_array_msg.header.seq);
+  ROS_INFO("Received set particles srv call, Pose Array Header stamp = %0.4f",req.pose_array_msg.header.stamp.toSec());
+    if (no_of_particles == 1){
+        geometry_msgs::Pose latest_pose = req.pose_array_msg.poses[0];
+        req.pose_array_msg.poses.clear();
+        geometry_msgs::Pose p;
+        int point_cnt = 0;
+        int circle_num = max_particles_/point_on_circle_ + 1;
+
+
+        p.orientation = latest_pose.orientation;
+        double o_x = latest_pose.position.x;
+        double o_y = latest_pose.position.y;
+
+//    for (double r = 0.0;r<r_max;r+=r_max/circle_num){
+
+        for (int  k = 0 ;k<circle_num; k++){
+            double r = k*radius_max_/circle_num;
+
+            for (int t =0;t<point_on_circle_;t++){
+                p.position.x = o_x + r*cos(2*M_PI*t/point_on_circle_);
+                p.position.y = o_y + r*sin(2*M_PI*t/point_on_circle_);
+                req.pose_array_msg.poses.push_back(p);
+                point_cnt ++;
+                if (point_cnt == max_particles_)
+                    break;
+            }
+            if (point_cnt == max_particles_)
+                break;
+        }
+      no_of_particles =  req.pose_array_msg.poses.size();
+    }
+  if (no_of_particles == max_particles_)
+  {
+    ROS_INFO("Received %i particles",no_of_particles);
+    ROS_INFO("First particle x:%0.2f & y:%0.2f",req.pose_array_msg.poses[0].position.x,req.pose_array_msg.poses[0].position.y);
+
+    // In case the client sent us a poses in the past, integrate the intervening odometric change.
+    tf::StampedTransform tx_odom;
+    try
+    {
+      ros::Time now = ros::Time::now();
+      // wait a little for the latest tf to become available
+      tf_->waitForTransform(base_frame_id_, req.pose_array_msg.header.stamp,
+                              base_frame_id_, ros::Time(0),
+                              odom_frame_id_, ros::Duration(0.25));
+      tf_->lookupTransform(base_frame_id_, req.pose_array_msg.header.stamp,
+                           base_frame_id_, ros::Time(0),
+                           odom_frame_id_, tx_odom);
+    }
+    catch(tf::TransformException e)
+    {
+      // If we've never sent a transform, then this is normal, because the
+      // global_frame_id_ frame doesn't exist.  We only care about in-time
+      // transformation for on-the-move pose-setting, so ignoring this
+      // startup condition doesn't really cost us anything.
+      if(sent_first_transform_)
+        ROS_WARN("Failed to transform poses in time: (%s)", e.what());
+      tx_odom.setIdentity();
+    }
+
+    tf::Pose pose_old, pose_new;
+
+    for(int i=0;i<no_of_particles;i++)
+    {
+      poseMsgToTF(req.pose_array_msg.poses[i],pose_old);
+      poseTFToMsg(pose_old * tx_odom,req.pose_array_msg.poses[i]);
+    }
+
+    pf_init_model(pf_, (pf_init_model_fn_t)AmclNode::customPoseGenerator,
+                  (void *) &req.pose_array_msg);
+    res.success = true;
+  }
+  else
+  {
+    ROS_ERROR("Number of recieved particles: %i not equal to max_particles: %i",no_of_particles,max_particles_);
+    res.success = false;
+  }
+  pf_init_ = false;
+  ROS_INFO("Custom particles set!");
+
+  return true;
+}
+
+
 // force nomotion updates (amcl updating without requiring motion)
 bool 
 AmclNode::nomotionUpdateCallback(std_srvs::Empty::Request& req,
@@ -1100,6 +1264,9 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
     ROS_ERROR("Couldn't determine robot's pose associated with laser scan");
     return;
   }
+    if (use_pre_process_){
+        preprocess_scan(laser_scan);
+    }
 
 
   pf_vector_t delta = pf_vector_zero();
@@ -1108,9 +1275,14 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
   {
     // Compute change in pose
     //delta = pf_vector_coord_sub(pose, pf_odom_pose_);
-    delta.v[0] = pose.v[0] - pf_odom_pose_.v[0];
-    delta.v[1] = pose.v[1] - pf_odom_pose_.v[1];
-    delta.v[2] = angle_diff(pose.v[2], pf_odom_pose_.v[2]);
+    // if get bad scan data, do not update filter position, along x direction..
+
+    if (!use_pre_process_ || (use_pre_process_ && scan_valid_flag_>1) ){
+      delta.v[0] = pose.v[0] - pf_odom_pose_.v[0];
+      delta.v[1] = pose.v[1] - pf_odom_pose_.v[1];
+      delta.v[2] = angle_diff(pose.v[2], pf_odom_pose_.v[2]);
+    }
+
 
     // See if we should update the filter
     bool update = fabs(delta.v[0]) > d_thresh_ ||
@@ -1373,6 +1545,22 @@ AmclNode::laserReceived(const sensor_msgs::LaserScanConstPtr& laser_scan)
                                  tf::Point(odom_to_map.getOrigin()));
       latest_tf_valid_ = true;
 
+        if (use_post_process_ == true){
+            ROS_ERROR("AMCL Not update odom!!");
+        }
+      // publish map->odom tf as topic
+        if(tf_publish_){
+            geometry_msgs::PoseWithCovarianceStamped map_odom_tf_;
+            geometry_msgs::Pose p;
+            tf::poseTFToMsg(latest_tf_.inverse(),p);
+            map_odom_tf_.pose.pose= p;
+            map_odom_tf_.header.stamp = ros::Time::now();
+          map_odom_tf_.header.frame_id = global_frame_id_;
+
+
+          tf_pub_.publish(map_odom_tf_);
+        }
+
       if (tf_broadcast_ == true)
       {
         // We want to send a transform that is good up until a
@@ -1524,4 +1712,19 @@ AmclNode::applyInitialPose()
     delete initial_pose_hyp_;
     initial_pose_hyp_ = NULL;
   }
+}
+
+void AmclNode::preprocess_scan(const sensor_msgs::LaserScanConstPtr &msg) {
+    const float *ptr = &(msg->ranges[0]);
+    std::valarray<float> scan_range(ptr, msg->ranges.size());
+    std::valarray<float> valid_range = scan_range[scan_range > float(scan_valid_min_)];
+    double valid_per = double(valid_range.size()/scan_range.size());
+    if(valid_per > scan_valid_cnt_min_)
+        scan_valid_flag_ ++;
+    else{
+      scan_valid_flag_ = 0;
+        ROS_ERROR("scan valid percent %.2f",valid_per);
+        ROS_ERROR("Bad scan data !!!");
+    }
+
 }
