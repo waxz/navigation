@@ -1114,9 +1114,10 @@ AmclNode::setParticlesCallback(amcl::amcl_particles::Request& req,
         double o_y = latest_pose.position.y;
 
 //    for (double r = 0.0;r<r_max;r+=r_max/circle_num){
+        double radius = std::max(radius_max_, latest_pose.position.z);
 
         for (int  k = 0 ;k<circle_num; k++){
-            double r = k*radius_max_/circle_num;
+            double r = k*radius/circle_num;
 
             for (int t =0;t<point_on_circle_;t++){
                 p.position.x = o_x + r*cos(2*M_PI*t/point_on_circle_);
