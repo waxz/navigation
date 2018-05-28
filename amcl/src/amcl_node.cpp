@@ -221,9 +221,7 @@ class AmclNode
     double laser_min_range_;
     double laser_max_range_;
 
-    // add custom set filter service
-    int point_on_circle_;
-    double radius_max_;
+
 
     //Nomotion update control
     bool m_force_update;  // used to temporarily let amcl update samples even when no motion occurs...
@@ -435,8 +433,7 @@ AmclNode::AmclNode() :
   private_nh_.param("scan_valid_min", scan_valid_min_, 0.1);
     private_nh_.param("tf_publish",tf_publish_,false);
 
-    private_nh_.param("point_on_circle", point_on_circle_, 300);
-    private_nh_.param("radius_max", radius_max_, 0.2);
+
 
 
 
@@ -1098,41 +1095,27 @@ bool
 AmclNode::setParticlesCallback(amcl::amcl_particles::Request& req,
                                amcl::amcl_particles::Response& res)
 {
+
   int no_of_particles =  req.pose_array_msg.poses.size();
+    geometry_msgs::PoseWithCovarianceStamped p ;
+    int use_initial_pose_ = (fabs(req.initial_pose.pose.pose.position.x) +  fabs(req.initial_pose.pose.pose.position.y) != 0) ;
+
+    if (req.pose_array_msg.poses.empty() && !use_initial_pose_){
+        ROS_INFO("Received set particles srv call,No valid data!!");
+        res.success = false;
+        return true;
+    }
+
   ROS_INFO("Received set particles srv call, Pose Array Header seq = %i",req.pose_array_msg.header.seq);
   ROS_INFO("Received set particles srv call, Pose Array Header stamp = %0.4f",req.pose_array_msg.header.stamp.toSec());
-    if (no_of_particles == 1){
-        geometry_msgs::Pose latest_pose = req.pose_array_msg.poses[0];
-        req.pose_array_msg.poses.clear();
-        geometry_msgs::Pose p;
-        int point_cnt = 0;
-        int circle_num = max_particles_/point_on_circle_ + 1;
+    if (use_initial_pose_){
+      ROS_INFO("Received set particles srv call, set initial_pose");
 
+      req.initial_pose.header.stamp = ros::Time::now();
+      handleInitialPoseMessage(req.initial_pose);
+        res.success = true;
 
-        p.orientation = latest_pose.orientation;
-        double o_x = latest_pose.position.x;
-        double o_y = latest_pose.position.y;
-
-//    for (double r = 0.0;r<r_max;r+=r_max/circle_num){
-        double radius = std::max(radius_max_, latest_pose.position.z);
-
-        for (int  k = 0 ;k<circle_num; k++){
-            double r = k*radius/circle_num;
-
-            for (int t =0;t<point_on_circle_;t++){
-                p.position.x = o_x + r*cos(2*M_PI*t/point_on_circle_);
-                p.position.y = o_y + r*sin(2*M_PI*t/point_on_circle_);
-                req.pose_array_msg.poses.push_back(p);
-                point_cnt ++;
-                if (point_cnt == max_particles_)
-                    break;
-            }
-            if (point_cnt == max_particles_)
-                break;
-        }
-      no_of_particles =  req.pose_array_msg.poses.size();
-    }
-  if (no_of_particles == max_particles_)
+    }else if (no_of_particles == max_particles_)
   {
     ROS_INFO("Received %i particles",no_of_particles);
     ROS_INFO("First particle x:%0.2f & y:%0.2f",req.pose_array_msg.poses[0].position.x,req.pose_array_msg.poses[0].position.y);
@@ -1172,13 +1155,14 @@ AmclNode::setParticlesCallback(amcl::amcl_particles::Request& req,
     pf_init_model(pf_, (pf_init_model_fn_t)AmclNode::customPoseGenerator,
                   (void *) &req.pose_array_msg);
     res.success = true;
+    pf_init_ = false;
+
   }
   else
   {
     ROS_ERROR("Number of recieved particles: %i not equal to max_particles: %i",no_of_particles,max_particles_);
     res.success = false;
   }
-  pf_init_ = false;
   ROS_INFO("Custom particles set!");
 
   return true;
